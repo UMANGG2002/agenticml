@@ -2,7 +2,9 @@
 
 This documents the audit-to-baseline pipeline as actually built and tested — not the full
 spec (see [spec.md](spec.md)), just what exists right now: `tools/data/*`, `tools/ml/automl.py`,
-`tools/ml/errors.py`, `experiments/*`, and `agent/*`. 151 passing tests back the claims below.
+`tools/ml/errors.py`, `experiments/*`, `agent/*` (including the LLM-driven loop in
+`agent/llm_agent.py`, backed by Claude or Gemini), and a minimal `apps/api` + `apps/web` running
+it over HTTP. 217 passing tests back the claims below.
 
 ## Quickstart
 
@@ -32,7 +34,7 @@ uv run python scripts/run_pipeline.py dataset/titanic.csv \
 ```
 
 A clean run prints the winning model, its params, cross-validated and held-out test scores, and
-where the fitted pipeline was saved (`data/artifacts/<experiment_id>/model.joblib`).
+where the winning model's metadata was saved (`data/artifacts/<experiment_id>/model.json`).
 
 ## Overall flow
 
@@ -101,15 +103,50 @@ flowchart TD
     DATA -->|DatasetProfile| AUTOML
     DATA -->|SplitResult| AUTOML
 
-    AUTOML --> ART["artifact store<br/>model.joblib + AutoMLResult"]:::built
+    AUTOML --> ART["artifact store<br/>model.json + AutoMLResult"]:::built
 
-    SCHEMAS["agent/schemas.py<br/>TOOL_REGISTRY<br/>(JSON-schema tool contract)"]:::plan
-    SCHEMAS -. "mirrors - not called yet" .-> DATA
+    SCHEMAS["agent/schemas.py<br/>TOOL_REGISTRY<br/>(JSON-schema tool contract)"]:::built
+    SCHEMAS -. "used by both orchestrator.py<br/>and llm_agent.py" .-> DATA
 
     classDef built fill:#fff,stroke:#1B1F1D,stroke-width:1.5px,color:#1B1F1D;
     classDef autom fill:#2F6F5E,stroke:#2F6F5E,color:#fff;
     classDef plan fill:none,stroke:#9AA098,stroke-width:1.3px,stroke-dasharray:4 3,color:#7A8078;
 ```
+
+This diagram covers the deterministic path (`agent/orchestrator.py`, a fixed profile -> target ->
+leakage -> AutoML sequence). `agent/llm_agent.py` is a second, model-driven way to call the same
+tools — see below.
+
+## Agentic layer
+
+`agent/llm_agent.py` replaces the orchestrator's fixed sequence with an actual LLM tool-calling
+loop: the model sees the same `TOOL_REGISTRY` tools (plus `run_experiment`, and a synthetic
+`ask_user` tool) and decides what to call, when to state a hypothesis, and when it needs a
+human — instead of a hardcoded `if status == ...`. Nothing here makes a network call unless you
+pass it a real client; every test drives the loop with a scripted fake
+(`tests/unit/fake_anthropic.py`), so the control flow is proven without needing an API key.
+
+```mermaid
+flowchart LR
+    U["caller<br/>(CLI / script)"] -->|objective + dataset_version_id| LOOP
+    LOOP[["agent/llm_agent.py<br/>run_agent()"]]:::autom
+    LOOP <-->|messages.create| CLAUDE["Claude<br/>(anthropic.Anthropic or a fake)"]
+    LOOP -->|tool_use| DISP["agent/dispatch.py<br/>ToolDispatcher"]
+    DISP -->|tool_result| LOOP
+    DISP --> TOOLS["Data Detective · create_split · run_experiment"]:::built
+    LOOP -->|ask_user tool_use| PAUSE{"awaiting_user_input"}:::gate
+    PAUSE -->|build_resume_messages + answer| LOOP
+    LOOP -->|end_turn| DONE["done: final_text"]
+
+    classDef built fill:#fff,stroke:#1B1F1D,stroke-width:1.5px,color:#1B1F1D;
+    classDef autom fill:#2F6F5E,stroke:#2F6F5E,color:#fff;
+    classDef gate fill:#fff,stroke:#B5701F,stroke-width:1.8px,color:#B5701F;
+```
+
+`ask_user` always ends the current turn rather than being resolved inline — the same
+re-entrant shape as `run_data_audit(confirmed_target=...)`, but the decision of *when* to ask is
+the model's, not a hardcoded gate. `run_experiment`'s `hypothesis` field is required at the
+schema level, so the model cannot call it without stating one (spec principle 3).
 
 ## Status
 
@@ -120,8 +157,12 @@ flowchart TD
 | `tools/ml/automl.py` — baseline model search with structural test-set isolation | built & tested |
 | `experiments/*` — experiment registry, parent/child graph, hypothesis-vs-parent conclusions | built & tested |
 | `tools/ml/errors.py` — confusion matrix, per-class metrics, thresholds, subgroup performance, residuals | built & tested |
-| `scripts/fetch_dataset.py`, `scripts/run_pipeline.py`, `ztest.py` | built |
-| Robustness/fairness checks, rule-based hypothesis engine, deterministic critic | planned (spec §11, §17–18) |
+| `tools/validation/robustness.py` — CV variance, multi-seed, alternate-split, noise sensitivity | built & tested |
+| `agent/llm_agent.py`, `dispatch.py`, `llm_tools.py` — LLM tool-calling loop, ask_user gate | built & tested |
+| `agent/gemini_client.py` — Gemini via LiteLLM, same interface as `anthropic.Anthropic()` | built & tested |
+| `apps/api/routes/agent.py` — HTTP API: upload dataset, start/answer/get a run | built & tested |
+| `apps/web` — minimal Next.js page driving the API (upload, ask_user prompt, experiments table) | built |
+| `scripts/fetch_dataset.py`, `scripts/run_pipeline.py`, `scripts/run_agent.py`, `ztest.py` | built |
+| Fairness layer, calibration/drift checks, rule-based hypothesis engine, deterministic critic | planned (spec §11–12, §17–18) |
 | DB persistence (replacing the in-memory dataset/experiment registries) | planned (spec §24) |
-| `agent/schemas.py` TOOL_REGISTRY wired into an actual LLM call loop | planned |
 | Domain knowledge — plain `.md` files only, no RAG/vector store for now | scope decision |

@@ -22,6 +22,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from experiments.schemas import ExperimentRecord
 from tools.data.schemas import (
     DatasetInspection,
     DatasetProfile,
@@ -30,6 +31,9 @@ from tools.data.schemas import (
     SplitResult,
     TargetDetectionResult,
 )
+from tools.ml.schemas import ClassificationErrorAnalysis, RegressionErrorAnalysis
+from tools.validation.critic import CriticReview
+from tools.validation.schemas import RobustnessReport
 
 
 class ToolDefinition(BaseModel):
@@ -71,6 +75,49 @@ class CreateSplitArgs(BaseModel):
     group_column: str | None = None
     time_column: str | None = None
     seed: int = 42
+
+
+class RunExperimentArgs(BaseModel):
+    dataset_version_id: str
+    target: str
+    task_type: str
+    hypothesis: str
+    parent_experiment_id: str | None = None
+    split_strategy: str = "random"
+    test_size: float = 0.2
+    feature_columns: list[str] | None = None
+    metric: str | None = None
+    candidate_models: list[str] | None = None
+    seed: int = 42
+
+
+class AnalyzeErrorsArgs(BaseModel):
+    experiment_id: str
+    dataset_version_id: str
+    subgroup_columns: list[str] | None = None
+
+
+class RunRobustnessChecksArgs(BaseModel):
+    experiment_id: str
+    dataset_version_id: str
+    seeds: list[int] | None = None
+    time_column: str | None = None
+    group_column: str | None = None
+
+
+class RunCriticArgs(BaseModel):
+    experiment_id: str
+    dataset_version_id: str
+
+
+class GenerateReportArgs(BaseModel):
+    """Generate a final report for the current project."""
+    pass  # Uses state — no extra args needed
+
+
+class GetDomainKnowledgeArgs(BaseModel):
+    query: str
+    top_k: int = 5
 
 
 def _tool(
@@ -124,6 +171,41 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
         "time-based strategy.",
         CreateSplitArgs,
         SplitResult,
+    ),
+    "run_experiment": _tool(
+        "run_experiment",
+        "Run an AutoML search as a tracked experiment. `hypothesis` is required — every "
+        "experiment needs a reason. Pass `parent_experiment_id` to compare against a prior "
+        "experiment; the recorded `conclusion` (supported/rejected/inconclusive) is decided "
+        "by comparing held-out scores, never by re-optimizing against the test set.",
+        RunExperimentArgs,
+        ExperimentRecord,
+    ),
+    "analyze_errors": _tool(
+        "analyze_errors",
+        "Run error analysis on a completed experiment: confusion matrix, per-class metrics, "
+        "threshold curve (binary classification), subgroup performance, and example errors. "
+        "For regression: residual distribution, subgroup RMSE, and extreme-error examples. "
+        "Requires a completed experiment_id to refit the model from its artifact.",
+        AnalyzeErrorsArgs,
+        ClassificationErrorAnalysis,  # or RegressionErrorAnalysis — union at runtime
+    ),
+    "run_robustness_checks": _tool(
+        "run_robustness_checks",
+        "Run robustness checks on a completed experiment: CV variance, multi-seed evaluation, "
+        "alternate split strategy (temporal/group validation), and noise sensitivity. "
+        "Returns evidence of where the model degrades under varied conditions.",
+        RunRobustnessChecksArgs,
+        RobustnessReport,
+    ),
+    "run_critic": _tool(
+        "run_critic",
+        "Run the deterministic critic/falsification layer on a completed experiment. "
+        "Checks for leakage, overfitting, CV variance, seed sensitivity, metric "
+        "appropriateness, subgroup disparities, and reproducibility. Returns a verdict "
+        "(approve/conditional/reject) with evidence. A critical rejection blocks model promotion.",
+        RunCriticArgs,
+        CriticReview,
     ),
 }
 

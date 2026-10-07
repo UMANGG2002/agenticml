@@ -9,8 +9,16 @@ def test_registry_contains_all_data_detective_tools():
         "check_data_quality",
         "detect_leakage",
         "create_split",
+        "run_experiment",
     }
     assert set(TOOL_REGISTRY) == expected
+
+
+def test_run_experiment_args_require_hypothesis():
+    schema = TOOL_REGISTRY["run_experiment"].parameters
+    assert "hypothesis" in schema["required"]
+    assert "target" in schema["required"]
+    assert "task_type" in schema["required"]
 
 
 def test_each_tool_has_a_non_empty_description():

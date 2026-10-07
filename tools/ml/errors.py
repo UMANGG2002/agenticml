@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import confusion_matrix, precision_recall_fscore_support
 
+from tools.ml.labels import positive_label
 from tools.ml.schemas import (
     ClassificationErrorAnalysis,
     ClassMetrics,
@@ -83,7 +84,8 @@ def analyze_classification_errors(
     false_negatives: list[ErrorExample] = []
 
     if is_binary:
-        pos_label, neg_label = labels[1], labels[0]
+        pos_label = positive_label(labels)
+        neg_label = labels[0] if pos_label == labels[1] else labels[1]
         proba = pipeline.predict_proba(X)[:, list(pipeline.classes_).index(pos_label)]
         y_true_binary = (y_true == pos_label).astype(int)
 

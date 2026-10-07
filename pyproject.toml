@@ -15,7 +15,9 @@ dependencies = [
     "pandas>=2.2",
     "numpy>=1.26",
     "scikit-learn>=1.5",
-    "joblib>=1.6.0",
+    "openai>=1.30.0",
+    "python-dotenv>=1.2.3",
+    "python-multipart>=0.0.32",
 ]
 
 [project.optional-dependencies]

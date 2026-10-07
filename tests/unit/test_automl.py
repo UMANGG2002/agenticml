@@ -1,6 +1,6 @@
+import json
 from pathlib import Path
 
-import joblib
 import numpy as np
 import pandas as pd
 import pytest
@@ -87,9 +87,11 @@ class TestGoldenPaths:
         assert result.artifact_path is not None
         assert Path(result.artifact_path).exists()
 
-        loaded = joblib.load(result.artifact_path)
-        preds = loaded.predict(df[["x1", "x2"]])
-        assert len(preds) == n
+        with open(result.artifact_path) as f:
+            artifact = json.load(f)
+        assert artifact["model_name"] == result.best_model
+        assert artifact["params"] == result.best_params
+        assert artifact["feature_columns"] == result.feature_columns
 
     def test_regression(self, tmp_path):
         rng = np.random.default_rng(1)

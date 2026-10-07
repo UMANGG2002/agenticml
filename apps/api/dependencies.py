@@ -12,6 +12,11 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg2://ame:ame@localhost:5432/ame"
     artifact_storage_path: str = "./data/artifacts"
 
+    # --- LLM provider (OpenAI SDK via LiteLLM proxy) ---
+    openai_api_key: str | None = None
+    litellm_base_url: str | None = None
+    agent_model: str = "genuin/clipit"
+
 
 @lru_cache
 def get_settings() -> Settings:

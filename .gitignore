@@ -11,6 +11,7 @@ htmlcov/
 node_modules/
 .next/
 apps/web/.next/
+*.tsbuildinfo
 
 # Env
 .env

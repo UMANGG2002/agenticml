@@ -17,6 +17,7 @@ from tools.data.split import create_split
 from tools.ml.automl import run_automl
 
 DATASET_NAME = "titanic"
+DATASET_NAME = "adult_income"
 OBJECTIVE = "predict passenger survival"
 # Titanic's boat/body columns are only recorded after the outcome is known —
 # see docs/architecture.md. Declaring them here lets detect_leakage catch it.

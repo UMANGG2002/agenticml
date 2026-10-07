@@ -21,12 +21,12 @@ exists to give the agent a first baseline to critique and improve on
 from __future__ import annotations
 
 import inspect
+import json
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
-import joblib
 import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer
@@ -41,6 +41,7 @@ from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
     f1_score,
+    make_scorer,
     mean_absolute_error,
     r2_score,
     roc_auc_score,
@@ -51,6 +52,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 from tools.data.schemas import DatasetProfile, SplitResult
+from tools.ml.labels import positive_label
 from tools.ml.schemas import AutoMLResult, ModelCandidateResult, TaskType
 
 # metric_name -> (sklearn scoring string, higher_is_better)
@@ -82,7 +84,8 @@ _DEFAULT_METRIC: dict[TaskType, str] = {
 _EXCLUDED_INFERRED_TYPES = {"identifier", "constant", "empty", "text"}
 
 _METRIC_FUNCTIONS = {
-    "f1": lambda y_true, y_pred: f1_score(y_true, y_pred),
+    # "f1" (binary) needs a pos_label — handled separately in evaluate_holdout
+    # since it depends on the fitted pipeline's classes_.
     "f1_macro": lambda y_true, y_pred: f1_score(y_true, y_pred, average="macro"),
     "accuracy": lambda y_true, y_pred: accuracy_score(y_true, y_pred),
     "rmse": lambda y_true, y_pred: root_mean_squared_error(y_true, y_pred),
@@ -180,6 +183,32 @@ def _build_preprocessor(df: pd.DataFrame, feature_columns: list[str]) -> ColumnT
     return ColumnTransformer(transformers)
 
 
+def build_pipeline(
+    model_name: str,
+    params: dict[str, Any],
+    seed: int,
+    task_type: TaskType,
+    train_df: pd.DataFrame,
+    feature_columns: list[str],
+) -> Pipeline:
+    """Build (unfit) the same preprocessing + estimator pipeline `run_automl` would use
+    for this model/params/task_type combination.
+
+    Exists so a saved JSON artifact (model_name, params, seed, feature_columns) can be
+    turned back into a real pipeline and refit — see experiments/artifacts.py.
+    """
+    registry = _default_candidates(task_type)
+    if model_name not in registry:
+        raise ValueError(f"unknown model '{model_name}' for task_type '{task_type}'")
+    estimator_class, _ = registry[model_name]
+    return Pipeline(
+        [
+            ("preprocess", _build_preprocessor(train_df, feature_columns)),
+            ("model", _instantiate(estimator_class, params, seed)),
+        ]
+    )
+
+
 def evaluate_holdout(pipeline: Pipeline, X: pd.DataFrame, y: pd.Series, metric: str) -> float:
     """Score a fitted pipeline on held-out rows using `metric`."""
     if metric not in _METRIC_REGISTRY:
@@ -188,6 +217,8 @@ def evaluate_holdout(pipeline: Pipeline, X: pd.DataFrame, y: pd.Series, metric: 
         y_score = pipeline.predict_proba(X)[:, 1]
         return float(roc_auc_score(y, y_score))
     y_pred = pipeline.predict(X)
+    if metric == "f1":
+        return float(f1_score(y, y_pred, pos_label=pipeline.classes_[-1]))
     return float(_METRIC_FUNCTIONS[metric](y, y_pred))
 
 
@@ -229,6 +260,12 @@ def run_automl(
     if metric not in _METRIC_REGISTRY:
         raise ValueError(f"unknown metric: '{metric}'")
     sklearn_scoring, higher_is_better = _METRIC_REGISTRY[metric]
+    cv_scoring: str | Any = sklearn_scoring
+    if metric == "f1":
+        # sklearn's "f1" scorer defaults to pos_label=1, which breaks for
+        # non-{0,1} binary targets (e.g. "<=50K"/">50K") — score explicitly
+        # against the conventional positive label instead.
+        cv_scoring = make_scorer(f1_score, pos_label=positive_label(df[target]))
 
     resolved_features, excluded = _select_feature_columns(df, target, profile, feature_columns)
     if not resolved_features:
@@ -267,7 +304,7 @@ def run_automl(
             )
 
             fit_started = time.perf_counter()
-            raw_scores = cross_val_score(pipeline, X_train, y_train, cv=cv, scoring=sklearn_scoring)
+            raw_scores = cross_val_score(pipeline, X_train, y_train, cv=cv, scoring=cv_scoring)
             fit_time = time.perf_counter() - fit_started
 
             sign = -1.0 if sklearn_scoring.startswith("neg_") else 1.0
@@ -292,19 +329,13 @@ def run_automl(
                     "rank_key": rank_key,
                     "model_name": model_name,
                     "params": params,
-                    "estimator_class": estimator_class,
                     "cv_mean": cv_mean,
                     "cv_std": cv_std,
                 }
 
     assert best is not None  # registry is non-empty here — guarded above
 
-    best_pipeline = Pipeline(
-        [
-            ("preprocess", _build_preprocessor(train_df, resolved_features)),
-            ("model", _instantiate(best["estimator_class"], best["params"], seed)),
-        ]
-    )
+    best_pipeline = build_pipeline(best["model_name"], best["params"], seed, task_type, train_df, resolved_features)
     best_pipeline.fit(X_train, y_train)
 
     validation_score = None
@@ -322,8 +353,24 @@ def run_automl(
     if artifact_dir is not None:
         experiment_dir = Path(artifact_dir) / experiment_id
         experiment_dir.mkdir(parents=True, exist_ok=True)
-        artifact_path = str(experiment_dir / "model.joblib")
-        joblib.dump(best_pipeline, artifact_path)
+        artifact_path = str(experiment_dir / "model.json")
+        with open(artifact_path, "w") as f:
+            json.dump(
+                {
+                    "experiment_id": experiment_id,
+                    "task_type": task_type,
+                    "metric": metric,
+                    "model_name": best["model_name"],
+                    "params": best["params"],
+                    "feature_columns": resolved_features,
+                    "target": target,
+                    "cv_mean": best["cv_mean"],
+                    "cv_std": best["cv_std"],
+                    "seed": seed,
+                },
+                f,
+                indent=2,
+            )
 
     return AutoMLResult(
         experiment_id=experiment_id,
