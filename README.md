@@ -55,3 +55,4 @@ database → schemas → deterministic ML tools → experiment runner
 The first deterministic tools implemented are the **Data Detective** tools in
 [tools/data/](tools/data/): `inspect_dataset`, `profile_columns`, `detect_target`,
 and `detect_leakage`. See [tools/data/README.md](tools/data/README.md).
+# agenticml
